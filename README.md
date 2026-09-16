@@ -1,24 +1,52 @@
 # Project Intercept
 
-Project Intercept is a single-player arcade-style space dogfighting game built in Unreal Engine 5 using C++ and Blueprints.
+A single-player space-combat game built in **Unreal Engine 5 with C++ and Blueprints**, featuring AI dogfights, target tracking, missile combat, and battles alongside friendly ships.
 
-This is the public repository containing selected source code from the project for portfolio purposes. The complete development repository is private.
+**Developer:** Samuel Mok · **Focus:** Gameplay programming · **Status:** In active development
 
-Project Intercept is the current working title of the project. The source code contains the original internal name: SpaceAce.
+This portfolio repository contains selected C++ source code for review. The full game project and assets are private; this source selection is not a standalone buildable game.
 
-## Summary
+## What I Built
 
-- Player ship with flight and camera controls
-- AI for friendly and enemy combat behaviour
-- Object pooling for lasers and missiles
-- Targeting, lock-on, and homing properties for missiles
-- Health and damage management
-- HUD and menu UI
-- FX integration
-- Full team battle mode
+I designed and implemented the following gameplay systems:
 
-Project utilizes C++ driven gameplay, leveraging Blueprints and Niagara for visual scripting and effects.
+- **Flight and ship systems:** Player controls, shared spacecraft behaviour, health, and damage.
+- **Combat AI:** State-based dogfighting with patrol, pursuit, break-off, and search behaviours.
+- **Targeting and weapons:** Target acquisition and cycling, missile lock-on, homing missiles, and laser weapons.
+- **Projectile management:** Reusable laser and missile pools with activation, collision, and return-to-pool lifecycles.
+- **Battle systems:** Capital ship and turret behaviour, plus centralized combatant tracking through an Unreal subsystem.
 
-## Status
+## Code Highlights
 
-Project is currently in active development.
+Start with targeting, AI, or weapons to see how the core combat systems are organized.
+
+| System | Implementation | What to look for |
+| --- | --- | --- |
+| Targeting | [TargetingComponent.cpp](Source/SpaceAce/Components/TargetingComponent.cpp) | Target acquisition, cycling, and timed missile lock-on. |
+| Combat AI | [ShipAIController.cpp](Source/SpaceAce/Controllers/ShipAIController.cpp) · [ShipAIState.cpp](Source/SpaceAce/AIStates/ShipAIState.cpp) | Combat decisions and transitions between dogfighting states. |
+| Weapons and pooling | [MissileWeaponComponent.cpp](Source/SpaceAce/Components/MissileWeaponComponent.cpp) · [LaserWeaponComponent.cpp](Source/SpaceAce/Components/LaserWeaponComponent.cpp) | Weapon firing and reusable projectile pools, with settings exposed to Blueprints. |
+| Projectile behaviour | [MissileProjectile.cpp](Source/SpaceAce/Projectiles/MissileProjectile.cpp) · [LaserProjectile.cpp](Source/SpaceAce/Projectiles/LaserProjectile.cpp) | Homing, movement, collision, damage, and projectile lifecycle handling. |
+| Ship systems | [ShipBase.cpp](Source/SpaceAce/Ships/ShipBase.cpp) · [PlayerShip.cpp](Source/SpaceAce/Ships/PlayerShip.cpp) | Shared ship behaviour and player-specific flight controls. |
+| Battle coordination | [CombatantSubsystem.cpp](Source/SpaceAce/Subsystems/CombatantSubsystem.cpp) · [CapitalShipBase.cpp](Source/SpaceAce/Ships/CapitalShipBase.cpp) | Combatant registration and capital ship behaviour. |
+
+## Gameplay Screenshots
+
+Screenshots from the development build. Select an image to view it at full resolution.
+
+| Dogfight / Targeting | Friendlies in Combat |
+| --- | --- |
+| [![Dogfight gameplay with the player ship and targeting HUD](Media/Screenshots/01_dogfight_targeting.png)](Media/Screenshots/01_dogfight_targeting.png) | [![Friendly ships marked in blue while engaging an enemy target](Media/Screenshots/07_friendlies_in_combat.png)](Media/Screenshots/07_friendlies_in_combat.png) |
+| **Missile Warning** | **Explosion** |
+| [![Incoming missile warning displayed during combat](Media/Screenshots/02_missile_warning_combat.png)](Media/Screenshots/02_missile_warning_combat.png) | [![An explosion directly ahead of the player ship](Media/Screenshots/05_explosion.png)](Media/Screenshots/05_explosion.png) |
+
+## Technology
+
+C++ · Unreal Engine 5 · Unreal Gameplay Framework · Blueprints · Niagara · Git
+
+The Unreal module retains the project's original internal name, `SpaceAce`.
+
+## Portfolio Notice
+
+Source code is provided for portfolio and code-review purposes only.
+
+© 2026 Samuel Mok. All rights reserved.
