@@ -1,4 +1,5 @@
 #include "ShipSensingComponent.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "CombatantSubsystem.h"
 #include "GameplayTagAssetInterface.h"
 #include "Engine/World.h"
@@ -15,6 +16,7 @@ UShipSensingComponent::UShipSensingComponent()
 void UShipSensingComponent::BeginPlay()
 {
 	Super::BeginPlay();
+    if (GetOwner() && !GetOwner()->HasAuthority()) return;
 
 	UWorld* World = GetWorld();
 
@@ -51,6 +53,7 @@ UShipSensingComponent::GetPerceivedContacts() const
 }
 void UShipSensingComponent::UpdateSenses()
 {
+    TRACE_CPUPROFILER_EVENT_SCOPE(SpaceAce_UShipSensingComponent_UpdateSenses);
 	for (FPerceivedContact& Contact : PerceivedContacts)
 	{
 		Contact.bCurrentlyVisible = false;
@@ -115,7 +118,7 @@ void UShipSensingComponent::UpdateSenses()
 
 bool UShipSensingComponent::IsEnemyCombatant(AActor* Candidate) const
 {
-	if (!IsValid(Candidate))
+	if (!IsValid(Candidate) || Candidate->IsHidden())
 	{
 		return false;
 	}

@@ -1,4 +1,6 @@
 #include "CapitalShipBase.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 
 #include "CapitalShipDataBase.h"
 #include "DefenseTurretBase.h"
@@ -80,7 +82,11 @@ void ACapitalShipBase::ClearSpawnedAttachments()
 
 void ACapitalShipBase::SpawnWeapons()
 {
-	if (!CapitalShipData || !GetWorld()) return;
+	if (!HasAuthority() || !CapitalShipData || !GetWorld() || !ShouldSpawnWeapons()) return;
+#if WITH_DEV_AUTOMATION_TESTS
+    if (FParse::Param(FCommandLine::Get(),TEXT("SpaceAceBalance")) &&
+        FParse::Param(FCommandLine::Get(),TEXT("SpaceAceBalanceNoDefenses"))) return;
+#endif
 	for (const FCapitalShipWeaponDefinition& Definition : CapitalShipData->Weapons)
 	{
 		if (!Definition.WeaponClass) continue;
@@ -103,7 +109,7 @@ void ACapitalShipBase::SpawnWeapons()
 
 void ACapitalShipBase::SpawnObjectives()
 {
-	if (!CapitalShipData || !GetWorld()) return;
+	if (!HasAuthority() || !CapitalShipData || !GetWorld()) return;
 	for (const FCapitalShipObjectiveDefinition& Definition : CapitalShipData->Objectives)
 	{
 		if (!Definition.ObjectiveClass) continue;
@@ -119,6 +125,16 @@ void ACapitalShipBase::SpawnObjectives()
 			Definition.SocketName);
 		ObjectiveActors.Add(Objective);
 	}
+}
+
+int32 ACapitalShipBase::GetExpectedMissionObjectiveCount() const
+{
+    if (!CapitalShipData) return 0;
+    int32 Count = 0;
+    for (const auto& Weapon : CapitalShipData->Weapons)
+        if (Weapon.bCountsAsMissionObjective) ++Count;
+    Count += CapitalShipData->Objectives.Num();
+    return Count;
 }
 
 void ACapitalShipBase::SpawnEngineEffects()
@@ -409,7 +425,7 @@ void ACapitalShipBase::CompleteManeuver()
 float ACapitalShipBase::TakeDamage(float DamageAmount, FDamageEvent const& DamageEvent,
 	AController* EventInstigator, AActor* DamageCauser)
 {
-	if (bDestroyed) return 0.0f;
+	if (!HasAuthority() || !CanBeDamaged() || bDestroyed) return 0.0f;
 	const float AppliedDamage = FMath::Max(0.0f, DamageAmount);
 	CurrentHealth -= AppliedDamage;
 	if (CurrentHealth <= 0.0f)

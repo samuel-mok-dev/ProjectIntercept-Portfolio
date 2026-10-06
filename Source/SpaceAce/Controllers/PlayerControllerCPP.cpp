@@ -2,14 +2,24 @@
 
 
 #include "PlayerControllerCPP.h"
+#include "Net/UnrealNetwork.h"
+#include "SpaceAceUserSettings.h"
+#include "SpaceAceSettingsWidget.h"
 #include "ShipBase.h"
 #include "PlayerShip.h"
 #include "EnhancedInputSubsystems.h"
 #include "EnhancedInputComponent.h"
 #include "InputActionValue.h"
+#include "CountermeasureComponent.h"
 #include "InputMappingContext.h"
 #include "Blueprint/UserWidget.h"
 #include "Kismet/GameplayStatics.h"
+#include "PrivatePlaytestGameMode.h"
+
+void APlayerControllerCPP::ServerSelectPlaytestFighter_Implementation(int32 TeamID, FName FighterID)
+{
+    if (auto* Mode = GetWorld()->GetAuthGameMode<APrivatePlaytestGameMode>()) Mode->SelectFighter(this, TeamID, FighterID);
+}
 
 APlayerControllerCPP::APlayerControllerCPP()
 {
@@ -42,7 +52,7 @@ void APlayerControllerCPP::BeginPlay()
                 );
 
 				Subsystem->RemoveMappingContext(IMC_Player);
-                Subsystem->AddMappingContext(IMC_Player, 0);
+                ApplyInputBindings();
             }
         }
     }
@@ -62,6 +72,7 @@ void APlayerControllerCPP::SetupInputComponent()
 
     if (IA_Throttle)
     {
+        EnhancedInputComponent->BindAction(IA_Throttle, ETriggerEvent::Canceled, this, &APlayerControllerCPP::HandleThrottle);
         EnhancedInputComponent->BindAction(
             IA_Throttle,
             ETriggerEvent::Triggered,
@@ -79,6 +90,7 @@ void APlayerControllerCPP::SetupInputComponent()
 
     if (IA_Pitch)
     {
+        EnhancedInputComponent->BindAction(IA_Pitch, ETriggerEvent::Canceled, this, &APlayerControllerCPP::HandlePitch);
         EnhancedInputComponent->BindAction(
             IA_Pitch,
             ETriggerEvent::Triggered,
@@ -96,6 +108,7 @@ void APlayerControllerCPP::SetupInputComponent()
 
     if (IA_Yaw)
     {
+        EnhancedInputComponent->BindAction(IA_Yaw, ETriggerEvent::Canceled, this, &APlayerControllerCPP::HandleYaw);
         EnhancedInputComponent->BindAction(
             IA_Yaw,
             ETriggerEvent::Triggered,
@@ -113,6 +126,7 @@ void APlayerControllerCPP::SetupInputComponent()
 
     if (IA_Roll)
     {
+        EnhancedInputComponent->BindAction(IA_Roll, ETriggerEvent::Canceled, this, &APlayerControllerCPP::HandleRoll);
         EnhancedInputComponent->BindAction(
             IA_Roll,
             ETriggerEvent::Triggered,
@@ -130,6 +144,7 @@ void APlayerControllerCPP::SetupInputComponent()
 
     if (IA_Gun)
     {
+        EnhancedInputComponent->BindAction(IA_Gun, ETriggerEvent::Canceled, this, &APlayerControllerCPP::HandleGun);
         EnhancedInputComponent->BindAction(
             IA_Gun,
             ETriggerEvent::Started,
@@ -157,6 +172,7 @@ void APlayerControllerCPP::SetupInputComponent()
 
     if (IA_Look)
     {
+        EnhancedInputComponent->BindAction(IA_Look, ETriggerEvent::Canceled, this, &APlayerControllerCPP::HandleLook);
         EnhancedInputComponent->BindAction(
             IA_Look,
             ETriggerEvent::Triggered,
@@ -192,6 +208,8 @@ void APlayerControllerCPP::SetupInputComponent()
 		);
 	}
 
+    if (!IA_Countermeasures) IA_Countermeasures=LoadObject<UInputAction>(nullptr,TEXT("/Game/Inputs/IA_Countermeasures.IA_Countermeasures"));
+    if (IA_Countermeasures) EnhancedInputComponent->BindAction(IA_Countermeasures,ETriggerEvent::Started,this,&APlayerControllerCPP::HandleCountermeasures);
 	if (IA_SwitchSecondaryWeapon)
 	{
 		EnhancedInputComponent->BindAction(
@@ -213,6 +231,53 @@ void APlayerControllerCPP::SetupInputComponent()
 	}
 }
 
+void APlayerControllerCPP::RefreshControlledShip()
+{
+    AShipBase* NewShip = Cast<AShipBase>(GetPawn());
+    if (ControlledShip != NewShip)
+    {
+        CurrentFlightInput = FFlightInput{};
+    }
+    ControlledShip = NewShip;
+    ControlledPlayerShip = Cast<APlayerShip>(GetPawn());
+}
+
+void APlayerControllerCPP::SetPawn(APawn* InPawn)
+{
+    Super::SetPawn(InPawn);
+    RefreshControlledShip();
+}
+
+void APlayerControllerCPP::OnRep_Pawn()
+{
+    Super::OnRep_Pawn();
+    RefreshControlledShip();
+}
+
+void APlayerControllerCPP::PlayerTick(float DeltaTime)
+{
+    Super::PlayerTick(DeltaTime);
+    // Input events have all been processed by Super. Send one coherent state,
+    // including zeroes after release, instead of up to four RPCs per frame.
+    if (IsLocalController() && ControlledShip)
+    {
+        if (IsPauseMenuOpen()) CurrentFlightInput = FFlightInput{};
+        if (HasAuthority())
+        {
+            ControlledShip->SetFlightInput(CurrentFlightInput);
+        }
+        else
+        {
+            FlightInputSendElapsed += DeltaTime;
+            if (FlightInputSendElapsed >= 1.0f / 30.0f)
+            {
+                FlightInputSendElapsed = FMath::Fmod(FlightInputSendElapsed, 1.0f / 30.0f);
+                ServerSetFlightInput(CurrentFlightInput);
+            }
+        }
+    }
+}
+
 void APlayerControllerCPP::OnPossess(APawn* InPawn)
 {
     Super::OnPossess(InPawn);
@@ -224,6 +289,12 @@ void APlayerControllerCPP::OnPossess(APawn* InPawn)
 
 void APlayerControllerCPP::OnUnPossess()
 {
+    if (ControlledShip && HasAuthority())
+    {
+        ControlledShip->StopFiringLasers();
+        ControlledShip->SetFlightInput(FFlightInput{});
+    }
+    CurrentFlightInput = FFlightInput{};
     ControlledPlayerShip = nullptr;
     
     ControlledShip = nullptr;
@@ -237,13 +308,8 @@ void APlayerControllerCPP::HandleThrottle(const FInputActionValue& Value)
 
     if (ControlledShip)
     {
-        ControlledShip->SetThrottleInput(ThrottleValue);
-        /* UE_LOG(
-            LogTemp,
-            Warning,
-            TEXT("Throttle Value: %f"),
-            ThrottleValue
-        ); */
+        CurrentFlightInput.Throttle = ThrottleValue;
+
     }
     else
     {
@@ -257,57 +323,43 @@ void APlayerControllerCPP::HandleThrottle(const FInputActionValue& Value)
 
 void APlayerControllerCPP::HandlePitch(const FInputActionValue& Value)
 {
-    const float PitchValue = Value.Get<float>();
+    const auto* Settings=USpaceAceUserSettings::Get();
+    const float PitchValue = Settings ? FMath::Clamp(Settings->FilterAxis(Value.Get<float>())*Settings->FlightSensitivity*(Settings->bInvertPitch?-1.f:1.f),-1.f,1.f) : Value.Get<float>();
 
     if (ControlledShip)
     {
-        ControlledShip->SetPitchInput(PitchValue);
-    }
+        CurrentFlightInput.Pitch = PitchValue;
 
-    /* UE_LOG(
-        LogTemp,
-        Warning,
-        TEXT("Pitch Value: %f"),
-        PitchValue
-    ); */
+    }
 }
 
 void APlayerControllerCPP::HandleYaw(const FInputActionValue& Value)
 {
-    const float YawValue = Value.Get<float>();
+    const auto* Settings=USpaceAceUserSettings::Get();
+    const float YawValue = Settings ? FMath::Clamp(Settings->FilterAxis(Value.Get<float>())*Settings->FlightSensitivity,-1.f,1.f) : Value.Get<float>();
 
     if (ControlledShip)
     {
-        ControlledShip->SetYawInput(YawValue);
-    }
+        CurrentFlightInput.Yaw = YawValue;
 
-/*   UE_LOG(
-        LogTemp,
-        Warning,
-        TEXT("Yaw Value: %f"),
-        YawValue
-    ); */
+    }
 }
 
 void APlayerControllerCPP::HandleRoll(const FInputActionValue& Value)
 {
-    const float RollValue = Value.Get<float>();
+    const auto* Settings=USpaceAceUserSettings::Get();
+    const float RollValue = Settings ? FMath::Clamp(Settings->FilterAxis(Value.Get<float>())*Settings->FlightSensitivity,-1.f,1.f) : Value.Get<float>();
 
     if (ControlledShip)
     {
-        ControlledShip->SetRollInput(RollValue);
-    }
+        CurrentFlightInput.Roll = RollValue;
 
-    /* UE_LOG(
-        LogTemp,
-        Warning,
-        TEXT("Roll Value: %f"),
-        RollValue
-    ); */
+    }
 }
 
 void APlayerControllerCPP::HandleGun(const FInputActionValue& Value)
 {
+    if (IsPauseMenuOpen()) return;
     const bool bIsFiring = Value.Get<bool>();
 
     if (ControlledShip)
@@ -332,6 +384,7 @@ void APlayerControllerCPP::HandleGun(const FInputActionValue& Value)
 
 void APlayerControllerCPP::HandleMissile(const FInputActionValue& Value)
 {
+    if (IsPauseMenuOpen()) return;
     const bool bIsFiring = Value.Get<bool>();
 
     if (ControlledShip && bIsFiring)
@@ -356,11 +409,15 @@ void APlayerControllerCPP::HandleLook(const FInputActionValue& Value)
         return;
     }
 
-    ControlledPlayerShip->HandleLookInput(Value.Get<FVector2D>());
+    if(IsPauseMenuOpen())return;
+    FVector2D Adjusted=Value.Get<FVector2D>();
+    if(const auto* Settings=USpaceAceUserSettings::Get()){Adjusted*=Settings->LookSensitivity;if(Settings->bInvertLook)Adjusted.Y*=-1;}
+    ControlledPlayerShip->HandleLookInput(Adjusted);
 }
 
 void APlayerControllerCPP::HandleSwitchTarget(const FInputActionValue& Value)
 {
+    if (IsPauseMenuOpen()) return;
     const bool bIsSwitching = Value.Get<bool>();
 
     if (ControlledShip && bIsSwitching)
@@ -390,6 +447,7 @@ void APlayerControllerCPP::HandleSwitchSecondaryWeapon(
 	const FInputActionValue& Value
 )
 {
+    if (IsPauseMenuOpen()) return;
 	if (ControlledShip && Value.Get<bool>())
 	{
 		ControlledShip->SwitchSecondaryWeaponMode();
@@ -402,6 +460,12 @@ void APlayerControllerCPP::HandlePause(const FInputActionValue& Value)
 	{
 		TogglePauseMenu();
 	}
+}
+
+void APlayerControllerCPP::HandleCountermeasures(const FInputActionValue& Value)
+{
+    if (!IsPauseMenuOpen() && ControlledShip && Value.Get<bool>())
+        if(auto* Decoys=ControlledShip->FindComponentByClass<UCountermeasureComponent>()) Decoys->Deploy();
 }
 
 void APlayerControllerCPP::TogglePauseMenu()
@@ -443,7 +507,7 @@ void APlayerControllerCPP::OpenPauseMenu()
 	}
 
 	ActivePauseMenu->AddToViewport(100);
-	SetPause(true);
+	if (GetNetMode() == NM_Standalone) SetPause(true);
 
     if (PauseSoundMix)
     {
@@ -480,5 +544,48 @@ void APlayerControllerCPP::ResumeGame()
 
 bool APlayerControllerCPP::IsPauseMenuOpen() const
 {
-	return IsValid(ActivePauseMenu) && ActivePauseMenu->IsInViewport();
+	return (IsValid(ActivePauseMenu) && ActivePauseMenu->IsInViewport()) || USpaceAceSettingsWidget::IsOpen(this);
+}
+
+void APlayerControllerCPP::ClearPauseState()
+{
+    SetPause(false);
+
+    if (PauseSoundMix)
+    {
+        UGameplayStatics::PopSoundMixModifier(this, PauseSoundMix);
+    }
+}
+
+void APlayerControllerCPP::ServerSetFlightInput_Implementation(const FFlightInput& NewFlightInput)
+{
+	if (AShipBase* Ship = Cast<AShipBase>(GetPawn()))
+	{
+		Ship->SetFlightInput(NewFlightInput);
+	}
+}
+
+void APlayerControllerCPP::ApplyInputBindings()
+{
+    if(!GetLocalPlayer()||!IMC_Player)return;
+    auto* InputSubsystem=GetLocalPlayer()->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>();
+    if(!InputSubsystem)return;
+    InputSubsystem->RemoveMappingContext(IMC_Player);
+    if(RuntimeInputContext)InputSubsystem->RemoveMappingContext(RuntimeInputContext);
+    RuntimeInputContext=DuplicateObject<UInputMappingContext>(IMC_Player,this);
+    if(const auto* Settings=USpaceAceUserSettings::Get())
+        for(int32 Index=0;Index<RuntimeInputContext->GetMappings().Num();++Index)
+        {
+            auto& Mapping=RuntimeInputContext->GetMapping(Index);
+            if(!Mapping.Action)continue;
+            if(const FKey* Override=Settings->KeyOverrides.Find(USpaceAceUserSettings::MappingID(Mapping.Action->GetFName(),Mapping.Key));Override&&Override->IsValid()&&!Override->IsAnalog())Mapping.Key=*Override;
+        }
+    InputSubsystem->AddMappingContext(RuntimeInputContext,0);
+}
+
+void APlayerControllerCPP::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+    Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+    DOREPLIFETIME_CONDITION(APlayerControllerCPP,RespawnShipsAhead,COND_OwnerOnly);
+    DOREPLIFETIME_CONDITION(APlayerControllerCPP,RespawnQueueSize,COND_OwnerOnly);
 }

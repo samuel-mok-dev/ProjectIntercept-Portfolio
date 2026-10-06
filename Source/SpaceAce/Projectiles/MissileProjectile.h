@@ -6,6 +6,7 @@
 #include "GameFramework/Actor.h"
 #include "Components/SphereComponent.h"
 #include "NiagaraComponent.h"
+#include "ProjectileNetState.h"
 #include "MissileProjectile.generated.h"
 
 class AMissileProjectile;
@@ -24,7 +25,8 @@ public:
 
 	FOnMissileDeactivated OnMissileDeactivated;
 
-	virtual void Tick(float DeltaTime) override;
+    virtual void Tick(float DeltaTime) override;
+    virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	void InitializeProjectile(
 		float NewSpeed,
@@ -49,6 +51,8 @@ public:
 
 	// Set homing target for missile tracking
 	void SetTarget(AActor* NewTarget);
+    void ConfigurePayload(float TurnRate, float TrackingAlignment, float Radius, float CapitalDamageMultiplier);
+    void Detonate(AActor* DirectHit, const FVector& Location);
 
 	bool IsAvailable() const
 	{
@@ -57,6 +61,7 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
+    virtual void EndPlay(const EEndPlayReason::Type Reason) override;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<USphereComponent> CollisionComponent;
@@ -67,8 +72,13 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UStaticMeshComponent> MissileMesh;
 
+    UPROPERTY(VisibleAnywhere, Category="Effects")
+    TObjectPtr<UStaticMeshComponent> MotorGlow;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Homing")
-	float HomingTurnRate = 3.0f;  // Degrees per second of turn
+	float HomingTurnRate = 3.0f; // Direction-vector change per second, before responsiveness.
+    UPROPERTY(EditDefaultsOnly, Category="Homing", meta=(ClampMin="0",ClampMax="1"))
+    float GuidanceResponsiveness = .6f;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Homing")
 	float MinimumTrackingAlignment = 0.5f;
@@ -92,19 +102,35 @@ protected:
 	void OnLaunchSoundFinished();
 
 private:
-	bool bIsActive = false;
+    UPROPERTY(ReplicatedUsing=OnRep_NetState)
+    FProjectileNetState NetState;
+    uint32 AppliedRevision = 0;
+    UFUNCTION()
+    void OnRep_NetState();
+    UFUNCTION(NetMulticast, Reliable)
+    void MulticastProjectileState(const FProjectileNetState& State);
+    UFUNCTION(NetMulticast, Unreliable)
+    void MulticastImpact(FVector_NetQuantize Location);
+    void PublishNetState();
+    void ApplyNetState(const FProjectileNetState& State);
+    bool bIsActive = false;
 
 	float ActiveTime = 0.0f;
 	float Speed = 40000.0f;  
 	float MaxLifetime = 8.0f;  
 	float Damage = 50.0f;  
+    float BlastRadius = 0.0f;
+    float AntiShipDamageMultiplier = 1.0f;
 	bool bIsHomingMissile = true;
 	float GravityScale = 0.0f;
 	FVector InheritedVelocity = FVector::ZeroVector;
 	FVector CurrentVelocity = FVector::ZeroVector;
 
 	// Homing target
+    UPROPERTY(ReplicatedUsing=OnRep_HomingTarget)
 	TObjectPtr<AActor> HomingTarget = nullptr;
+    UFUNCTION()
+    void OnRep_HomingTarget();
 
 	// Warning Target
 	TWeakObjectPtr<AShipBase> WarnedTarget;

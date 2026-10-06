@@ -1,6 +1,8 @@
 #include "ShipAIState.h"
 #include "ShipBase.h"
+#include "LaserWeaponComponent.h"
 #include "ShipSensingComponent.h"
+#include "SkirmishManager.h"
 
 void FShipAIPatrolState::Enter(FShipAIContext& Context)
 {
@@ -11,7 +13,12 @@ void FShipAIPatrolState::Enter(FShipAIContext& Context)
         return;
     }
 
-    if (!bHomeLocationInitialized)
+    auto* Manager=Context.ControlledShip->GetSkirmishManager();
+    if (Manager && Manager->GetCombatPatrolArea(HomeLocation,PatrolDistance))
+    {
+        bHomeLocationInitialized=true;
+    }
+    else if (!bHomeLocationInitialized)
     {
         HomeLocation = Context.ControlledShip->GetActorLocation();
         bHomeLocationInitialized = true;
@@ -90,6 +97,8 @@ void FShipAIPatrolState::Exit(FShipAIContext& Context)
 
 void FShipAIPursueState::Enter(FShipAIContext& Context)
 {
+    EngagedTarget.Reset();
+    FireDiscipline.Reset();
     UE_LOG(LogTemp, Warning, TEXT("AI entered Pursue state"));
 }
 
@@ -98,15 +107,39 @@ void FShipAIPursueState::Update(FShipAIContext& Context)
     if (
         !Context.ControlledShip ||
         !Context.SelectedContact ||
-        !Context.SelectedContact->Actor.IsValid()
+        !Context.SelectedContact->Actor.IsValid() ||
+        !Context.SelectedContact->bCurrentlyVisible
     )
     {
+        if (Context.ControlledShip)
+        {
+            Context.ControlledShip->StopFiringLasers();
+            if (auto* Guns=Context.ControlledShip->FindComponentByClass<ULaserWeaponComponent>())
+                Guns->SetAIAimError(FVector2D::ZeroVector);
+        }
+        EngagedTarget.Reset();
         return;
     }
 
     TimeSinceLastMissile += Context.DeltaTime;
 
     AActor* TargetActor = Context.SelectedContact->Actor.Get();
+    if (EngagedTarget.Get() != TargetActor)
+    {
+        EngagedTarget = TargetActor;
+        FireDiscipline.Reset(FMath::FRandRange(.5f,1.f), FMath::FRandRange(.6f,1.f), FMath::FRandRange(.8f,1.5f));
+        AimErrorPhase = FMath::FRandRange(0.f,2.f*PI);
+        Context.ControlledShip->StopFiringLasers();
+    }
+    else FireDiscipline.Advance(Context.DeltaTime);
+
+    // Shared, smooth angular error for both muzzles; steering cannot cancel it by
+    // following the erroneous point. This affects AI weapon aim only.
+    if (auto* Guns=Context.ControlledShip->FindComponentByClass<ULaserWeaponComponent>())
+    {
+        const float Phase = Context.CurrentTime*2.2f + AimErrorPhase;
+        Guns->SetAIAimError(FVector2D(.7f*FMath::Sin(Phase), .7f*FMath::Sin(Phase*.73f+1.1f)));
+    }
 
     const FVector ShipLocation = Context.ControlledShip->GetActorLocation();
     const FVector TargetLocation = TargetActor->GetActorLocation();
@@ -119,17 +152,9 @@ void FShipAIPursueState::Update(FShipAIContext& Context)
     const float LaserProjectileSpeed =
         Context.ControlledShip->GetLaserProjectileSpeed();
     
-    FVector AimLocation = TargetLocation;
-
-    if (LaserProjectileSpeed > KINDA_SMALL_NUMBER)
-    {
-        const float EstimatedTravelTime =
-            DistanceToTarget / LaserProjectileSpeed;
-        
-        AimLocation = 
-            TargetLocation +
-            TargetVelocity * EstimatedTravelTime;
-    }
+    const FVector AimLocation = ULaserWeaponComponent::PredictIntercept(
+        ShipLocation, TargetLocation, TargetVelocity, LaserProjectileSpeed,
+        Context.ControlledShip->GetLaserWeaponRange() / FMath::Max(LaserProjectileSpeed, 1.f));
 
     const FVector DirectionToAimPoint = 
         (AimLocation - ShipLocation).GetSafeNormal();
@@ -148,6 +173,7 @@ void FShipAIPursueState::Update(FShipAIContext& Context)
         Context.ControlledShip->GetLaserWeaponRange();
 
     const bool bCanFireLasers =
+        FireDiscipline.CanFireGuns() &&
         ForwardAlignment >= GunAlignmentThreshold &&
         DistanceToTarget <= LaserRange;
     
@@ -165,7 +191,9 @@ void FShipAIPursueState::Update(FShipAIContext& Context)
         Context.ControlledShip->GetMissileWeaponRange();
 
     const bool bCanFireMissile = (
+        FireDiscipline.IsReady() &&
         DistanceToTarget >= MissileProximityLimit &&
+        DistanceToTarget <= MissileRange &&
         ForwardAlignment >= MissileAlignmentThreshold &&
         TimeSinceLastMissile >= MissileFireCooldown &&
         !Context.ControlledShip->GetHasMissileInTheAir());
@@ -189,6 +217,9 @@ void FShipAIPursueState::Exit(FShipAIContext& Context)
     }
 
     Context.ControlledShip->StopFiringLasers();
+    if (auto* Guns=Context.ControlledShip->FindComponentByClass<ULaserWeaponComponent>())
+        Guns->SetAIAimError(FVector2D::ZeroVector);
+    EngagedTarget.Reset();
 }
 
 void FShipAIBreakOffState::Enter(FShipAIContext& Context)

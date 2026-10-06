@@ -40,6 +40,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Capital Ship")
 	void ApplyCapitalShipData();
 
+    const TArray<TObjectPtr<AActor>>& GetMissionObjectives() const { return ObjectiveActors; }
+    int32 GetExpectedMissionObjectiveCount() const;
+
 	UFUNCTION(BlueprintCallable, Category = "Capital Ship")
 	void SetTeamID(int32 NewTeamID);
 
@@ -77,6 +80,7 @@ public:
 	void OnJumpOutFinished();
 
 protected:
+    virtual bool ShouldSpawnWeapons() const { return true; }
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UStaticMeshComponent> ShipMesh;
 

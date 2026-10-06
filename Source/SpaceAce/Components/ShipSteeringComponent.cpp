@@ -1,4 +1,5 @@
 #include "ShipSteeringComponent.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "ShipBase.h"
 
 // Sets default values
@@ -47,6 +48,7 @@ void UShipSteeringComponent::SteerTowardsLocation(const FVector& WorldLocation)
 
 void UShipSteeringComponent::SteerTowardsDirection(const FVector& WorldDirection)
 {
+    TRACE_CPUPROFILER_EVENT_SCOPE(SpaceAce_UShipSteeringComponent_SteerTowardsDirection);
 	if (!OwningShip || WorldDirection.IsNearlyZero())
 	{
 		return;

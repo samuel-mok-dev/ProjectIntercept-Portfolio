@@ -19,6 +19,7 @@ void ASAMTurret::FireAtTarget(AShipBase* Target)
         ProjectileClass, Location, Rotation);
     if (!Projectile) return;
 
+    Projectile->SetLifeSpan(ProjectileLifetime+1.f);
     Projectile->InitializeProjectile(ProjectileSpeed, ProjectileDamage, ProjectileLifetime);
     Projectile->ConfigureFlight(true, FVector::ZeroVector, 0.0f);
     Projectile->ActivateProjectile(Location, Rotation, this, ProjectileDamage);

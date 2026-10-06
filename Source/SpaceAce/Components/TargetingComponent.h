@@ -16,18 +16,28 @@ class SPACEACE_API UTargetingComponent : public UActorComponent
 
 public:
     UTargetingComponent();
+    virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
     void Configure(const FGameplayTag& NewEnemyTeamTag);
     void AcquireTargets();
     void SwitchTarget();
     void UpdateLockOn(float DeltaTime);
+    void ResetLockOn();
+    // Mission AI orders may override normal nearest-enemy acquisition.
+    void SetPriorityTarget(AActor* Target);
+    // AI owns ordinary target selection, including an intentional absence of a contact.
+    void SetAICombatTarget(AActor* Target);
+    void ReleaseAICombatTarget();
 
     bool IsLockedOn() const;
+
+    UFUNCTION(BlueprintPure, Category = "Targeting")
+    float GetLockOnProgress() const;
 
     AActor* GetCurrentTarget() const;
 
 protected:
-    UPROPERTY()
+    UPROPERTY(Replicated)
     TObjectPtr<AActor> CurrentTarget;
 
     UPROPERTY()
@@ -42,15 +52,18 @@ protected:
     UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Targeting")
     float RequiredLockOnTime = 1.0f;
 
-    UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Targeting")
+    UPROPERTY(Replicated, VisibleInstanceOnly, BlueprintReadOnly, Category = "Targeting")
     float LockOnTime = 0.0f;
 
-    UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Targeting")
+    UPROPERTY(Replicated, VisibleInstanceOnly, BlueprintReadOnly, Category = "Targeting")
     bool bIsLockedOn = false;
 
     int32 CurrentTargetIndex = INDEX_NONE;
 
 private:
+    TWeakObjectPtr<AActor> PriorityTarget;
+    TWeakObjectPtr<AActor> AICombatTarget;
+    bool bAIControlsTarget = false;
     bool IsValidTarget(AActor* Candidate) const;
 
     void SelectTarget(int32 TargetIndex);

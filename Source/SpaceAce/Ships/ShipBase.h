@@ -11,6 +11,9 @@
 
 //Forward Declarations
 class UStaticMeshComponent;
+class UFighterPropulsionComponent;
+class UFighterLandingGearComponent;
+class UCountermeasureComponent;
 class UBoxComponent;
 class USceneComponent;
 class UCameraComponent;
@@ -30,12 +33,44 @@ class USoundBase;
 class ASkirmishManager;
 enum class ESecondaryWeaponMode : uint8;
 
+USTRUCT()
+struct FFlightInput
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	float Throttle = 0.0f;
+	UPROPERTY()
+	float Pitch = 0.0f;
+	UPROPERTY()
+	float Yaw = 0.0f;
+	UPROPERTY()
+	float Roll = 0.0f;
+};
+
 UCLASS() 
 class SPACEACE_API AShipBase : public APawn, public IGameplayTagAssetInterface
 {
 	GENERATED_BODY()
 
 public:
+    void SetLaunchLeader(AShipBase* Leader) { LaunchLeader=Leader; }
+    void SetMissionStaged(bool bStaged);
+    TWeakObjectPtr<AShipBase> LaunchLeader;
+    TArray<TWeakObjectPtr<UActorComponent>> MissionPausedComponents;
+    UPROPERTY(ReplicatedUsing=OnRep_CatapultStatus, BlueprintReadOnly, Category="Catapult") bool bOnCatapult = false;
+    UFUNCTION() void OnRep_CatapultStatus();
+    UPROPERTY(Replicated, BlueprintReadOnly, Category="Catapult") bool bCatapultLaunching = false;
+    void BeginCatapult(const FTransform& Start, const FVector& Exit);
+    void UpdateCatapult(float DeltaTime);
+    static float CatapultDistance(float Time, float Distance, float ExitSpeed);
+    static float CatapultSpeed(float Time, float Distance, float ExitSpeed);
+    float CatapultHold = 0.f;
+    UPROPERTY(Replicated) float CatapultWait = 0.f;
+    float CatapultElapsed = 0.f;
+    UPROPERTY(Replicated) FVector CatapultStart = FVector::ZeroVector;
+    UPROPERTY(Replicated) FVector CatapultExit = FVector::ZeroVector;
+    UPROPERTY(Replicated) double CatapultStartedAt = 0;
 	// Sets default values for this pawn's properties
 	AShipBase();
 
@@ -44,6 +79,10 @@ public:
 	) const override;
 
 protected:
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components") TObjectPtr<UFighterLandingGearComponent> LandingGear;
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components") TObjectPtr<UCountermeasureComponent> Countermeasures;
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components")
+    TObjectPtr<UFighterPropulsionComponent> Propulsion;
 	// Components
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
@@ -97,7 +136,7 @@ protected:
 	
 protected:
 	// Ship Data
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ship Data")
+	UPROPERTY(ReplicatedUsing=OnRep_ShipData, EditAnywhere, BlueprintReadOnly, Category = "Ship Data")
 	TObjectPtr<UShipDataAsset> ShipData;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "FLight")
@@ -174,16 +213,30 @@ protected:
 
 private:
 	// Inputs from Player Controller
-	float ThrottleInput = 0.0f;
-	float PitchInput = 0.0f;
-	float YawInput = 0.0f;
-	float RollInput = 0.0f;
+	FFlightInput FlightInput;
 
-	bool bDeathHandled = false;
+	float EnginePitchVariation = 1.0f;
+
+    UFUNCTION(Server, Reliable)
+    void ServerSetLaserFiring(bool bFiring);
+    UFUNCTION(Server, Reliable)
+    void ServerFireMissile();
+    UFUNCTION(Server, Reliable)
+    void ServerSwitchTarget();
+    UFUNCTION(Server, Reliable)
+    void ServerSwitchSecondaryWeapon();
+    UFUNCTION()
+    void OnRep_DeathHandled();
+    UFUNCTION()
+    void OnRep_ShipData();
+
+    UPROPERTY(ReplicatedUsing=OnRep_DeathHandled)
+    bool bDeathHandled = false;
+    UPROPERTY(Replicated)
 	bool bCombatEnabled = true;
 
 	UPROPERTY(
-			VisibleInstanceOnly,
+			Replicated, VisibleInstanceOnly,
 			BlueprintReadOnly,
 			Category = "Combat",
 			meta = (AllowPrivateAccess = "true")
@@ -202,6 +255,7 @@ private:
 public:	
 	// Called every frame
 	virtual void Tick(float DeltaTime) override;
+    virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	// Called to bind functionality to input
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
@@ -227,6 +281,8 @@ public:
 	void SetYawInput(float Value);
 	void SetRollInput(float Value);
 
+	void SetFlightInput(const FFlightInput& NewFlightInput);
+
 	void ApplyRotationTorque();
 
 	void UpdateCurrentSpeed(float DeltaTime);
@@ -234,6 +290,7 @@ public:
 	void UpdateLinearVelocity();
 
 	void SetSkirmishManager(ASkirmishManager* NewManager);
+    ASkirmishManager* GetSkirmishManager() const;
 	void SetCombatEnabled(bool bEnabled);
 	bool IsCombatEnabled() const;
 
@@ -270,6 +327,9 @@ public:
 	bool GetHasMissileInTheAir() const;
 	
 	bool GetIsLockedOn() const;
+
+    UFUNCTION(BlueprintPure, Category = "Targeting")
+    float GetLockOnProgress() const;
 	bool IsDead() const;
 	bool IsHostileTo(const AShipBase* OtherShip) const;
 	void SetTeamID(int32 NewTeamID) { RuntimeTeamID = NewTeamID; }
@@ -300,7 +360,7 @@ public:
 	UFUNCTION(BlueprintImplementableEvent, Category = "Mission")
 	void PlayHyperspaceExitEffect();
 
-	UPROPERTY(Transient)
+	UPROPERTY(Replicated)
 	int32 RuntimeTeamID = INDEX_NONE;
 
 	void SetPreMatchFlight(bool bEnabled);

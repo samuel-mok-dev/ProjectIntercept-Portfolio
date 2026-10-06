@@ -1,6 +1,8 @@
 #include "DefenseTurretBase.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 
 #include "ShipBase.h"
+#include "Net/UnrealNetwork.h"
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/World.h"
@@ -9,6 +11,11 @@
 ADefenseTurretBase::ADefenseTurretBase()
 {
 	PrimaryActorTick.bCanEverTick = true;
+    PrimaryActorTick.TickInterval=.05f;
+    bReplicates=true;
+    SetReplicateMovement(true);
+    SetNetUpdateFrequency(15.f);
+    SetNetCullDistanceSquared(FMath::Square(90000.f));
 	Root = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
 	SetRootComponent(Root);
 	FixedBaseMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("FixedBaseMesh"));
@@ -35,9 +42,20 @@ void ADefenseTurretBase::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 	if (bDestroyed) return;
+    if (!HasAuthority())
+    {
+        YawBaseMesh->SetRelativeRotation(FMath::RInterpTo(YawBaseMesh->GetRelativeRotation(),FRotator(0,ReplicatedYaw,0),DeltaSeconds,15));
+        PitchAssembly->SetRelativeRotation(FMath::RInterpTo(PitchAssembly->GetRelativeRotation(),FRotator(ReplicatedPitch,0,0),DeltaSeconds,15));
+        return;
+    }
 
 	FireTimer = FMath::Max(0.0f, FireTimer - DeltaSeconds);
-	AShipBase* Target = FindTarget();
+	TargetScanTimer-=DeltaSeconds;
+    if (TargetScanTimer<=0 || !CachedTarget.IsValid() || CachedTarget->IsDead())
+    {
+        CachedTarget=FindTarget(); TargetScanTimer=.25f;
+    }
+    AShipBase* Target = CachedTarget.Get();
 	if (!Target) return;
 
 	if (AimAtTarget(Target, DeltaSeconds) && FireTimer <= 0.0f && HasLineOfSightTo(Target))
@@ -50,12 +68,13 @@ void ADefenseTurretBase::Tick(float DeltaSeconds)
 float ADefenseTurretBase::TakeDamage(float DamageAmount, FDamageEvent const& DamageEvent,
 	AController* EventInstigator, AActor* DamageCauser)
 {
-	if (bDestroyed) return 0.0f;
+	if (!HasAuthority() || !CanBeDamaged() || bDestroyed || !FMath::IsFinite(DamageAmount) || DamageAmount<=0) return 0.0f;
 	const float Applied = FMath::Max(0.0f, DamageAmount);
 	Health -= Applied;
 	if (Health <= 0.0f)
 	{
 		bDestroyed = true;
+        ForceNetUpdate();
 		SetActorEnableCollision(false);
 		SetActorHiddenInGame(true);
 		SetActorTickEnabled(false);
@@ -65,6 +84,7 @@ float ADefenseTurretBase::TakeDamage(float DamageAmount, FDamageEvent const& Dam
 
 AShipBase* ADefenseTurretBase::FindTarget() const
 {
+    TRACE_CPUPROFILER_EVENT_SCOPE(SpaceAce_ADefenseTurretBase_FindTarget);
 	TArray<AActor*> Ships;
 	UGameplayStatics::GetAllActorsOfClass(GetWorld(), AShipBase::StaticClass(), Ships);
 	AShipBase* BestTarget = nullptr;
@@ -73,7 +93,7 @@ AShipBase* ADefenseTurretBase::FindTarget() const
 	for (AActor* Actor : Ships)
 	{
 		AShipBase* Ship = Cast<AShipBase>(Actor);
-		if (!Ship || Ship->IsDead() || Ship->GetTeamID() == TeamID) continue;
+		if (!Ship || Ship->IsDead() || Ship->bOnCatapult || Ship->GetTeamID() == TeamID) continue;
 
 		const float DistanceSquared = FVector::DistSquared(GetActorLocation(), Ship->GetActorLocation());
 		if (DistanceSquared > BestDistanceSquared || !CanAimAtLocation(Ship->GetActorLocation())) continue;
@@ -129,6 +149,7 @@ bool ADefenseTurretBase::AimAtTarget(const AActor* Target, float DeltaSeconds)
 	YawBaseMesh->SetRelativeRotation(FRotator(0.0f, NewYaw, 0.0f));
 	PitchAssembly->SetRelativeRotation(FRotator(NewPitch, 0.0f, 0.0f));
 
+	ReplicatedYaw=NewYaw; ReplicatedPitch=NewPitch;
 	const float YawError = FMath::Abs(FMath::FindDeltaAngleDegrees(NewYaw, DesiredYaw));
 	const float PitchError = FMath::Abs(FMath::FindDeltaAngleDegrees(NewPitch, DesiredPitch));
 	return YawError <= FireToleranceDegrees && PitchError <= FireToleranceDegrees;
@@ -155,4 +176,20 @@ FVector ADefenseTurretBase::GetMuzzleLocation() const
 FRotator ADefenseTurretBase::GetMuzzleRotation() const
 {
 	return PrimaryMuzzle ? PrimaryMuzzle->GetComponentRotation() : GetActorRotation();
+}
+
+void ADefenseTurretBase::OnRep_Destroyed()
+{
+    SetActorEnableCollision(!bDestroyed);
+    SetActorHiddenInGame(bDestroyed);
+    SetActorTickEnabled(!bDestroyed);
+}
+void ADefenseTurretBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+    Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+    DOREPLIFETIME(ADefenseTurretBase,TeamID);
+    DOREPLIFETIME(ADefenseTurretBase,Health);
+    DOREPLIFETIME(ADefenseTurretBase,bDestroyed);
+    DOREPLIFETIME(ADefenseTurretBase,ReplicatedYaw);
+    DOREPLIFETIME(ADefenseTurretBase,ReplicatedPitch);
 }

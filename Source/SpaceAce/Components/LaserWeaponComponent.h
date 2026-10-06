@@ -43,6 +43,8 @@ protected:
 
     FTimerHandle FireTimerHandle;
     TQueue<ALaserProjectile*> AvailableLasers;
+    double NextFireTime = -1.0;
+    void ScheduleNextShot();
 
 public:
     DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnLaserFired);
@@ -56,6 +58,7 @@ public:
     bool bIsFiring = false;
 
     ULaserWeaponComponent();
+    virtual void EndPlay(const EEndPlayReason::Type Reason) override;
 
     void Configure(
         const TArray<USceneComponent*>& NewCannonMuzzles,
@@ -78,4 +81,12 @@ public:
     // Getters
     float GetEffectiveRange() const;
     float GetProjectileSpeed() const;
+    static FVector PredictIntercept(const FVector& Origin, const FVector& TargetPosition,
+        const FVector& TargetVelocity, float ProjectileSpeed, float MaxFlightTime);
+    static FVector ConvergedDirection(const FVector& MuzzleOrigin, const FVector& AimPoint,
+        const FVector& ShipForward);
+    FVector GetGunAimPoint() const;
+    void SetAIAimError(const FVector2D& Degrees) { AIAimErrorDegrees = Degrees; }
+private:
+    FVector2D AIAimErrorDegrees = FVector2D::ZeroVector;
 };

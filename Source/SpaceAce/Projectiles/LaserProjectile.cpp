@@ -1,7 +1,10 @@
+#include "LaserProjectile.h"
+#include "../Tests/FactionBalanceTelemetry.h"
 // Fill out your copyright notice in the Description page of Project Settings.
 
 
-#include "LaserProjectile.h"
+#include "LaserWeaponComponent.h"
+#include "Net/UnrealNetwork.h"
 #include "Kismet/GameplayStatics.h"
 #include "GameFramework/ProjectileMovementComponent.h"
 #include "NiagaraFunctionLibrary.h"
@@ -11,6 +14,11 @@
 // Sets default values
 ALaserProjectile::ALaserProjectile()
 {
+    bReplicates = true;
+    bNetUseOwnerRelevancy = true;
+    SetReplicateMovement(true);
+    SetNetUpdateFrequency(60.0f);
+    SetMinNetUpdateFrequency(30.0f);
  	// Set this actor to call Tick() every frame.  You can turn this off to improve performance if you don't need it.
 	PrimaryActorTick.bCanEverTick = true;
 
@@ -19,6 +27,7 @@ ALaserProjectile::ALaserProjectile()
 	SetRootComponent(CollisionComponent);
 
 	CollisionComponent->InitSphereRadius(100.0f);
+    CollisionComponent->SetCanEverAffectNavigation(false);
 	CollisionComponent->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
 	CollisionComponent->SetCollisionObjectType(ECollisionChannel::ECC_WorldDynamic);
 	CollisionComponent->SetCollisionResponseToAllChannels(ECollisionResponse::ECR_Ignore);
@@ -28,6 +37,7 @@ ALaserProjectile::ALaserProjectile()
 	LaserEffect = CreateDefaultSubobject<UNiagaraComponent>(TEXT("LaserEffect"));
 	LaserEffect->SetupAttachment(CollisionComponent);
 	LaserEffect->SetAutoActivate(false);
+    LaserEffect->SetCanEverAffectNavigation(false);
 
 	SetActorHiddenInGame(true);
 	SetActorEnableCollision(false);
@@ -58,6 +68,7 @@ void ALaserProjectile::BeginPlay()
 // Called every frame
 void ALaserProjectile::Tick(float DeltaTime)
 {
+    if (!HasAuthority() || !bIsActive) return;
     Super::Tick(DeltaTime);
 
     if (!bIsActive)
@@ -73,6 +84,13 @@ void ALaserProjectile::Tick(float DeltaTime)
     }
 }
 
+void ALaserProjectile::InitializeProjectile(float NewSpeed, float NewDamage, float NewLifetime)
+{
+    Speed = FMath::IsFinite(NewSpeed) ? FMath::Max(0.0f, NewSpeed) : 0.0f;
+    Damage = FMath::IsFinite(NewDamage) ? FMath::Max(0.0f, NewDamage) : 0.0f;
+    MaxLifetime = FMath::IsFinite(NewLifetime) ? FMath::Max(0.01f, NewLifetime) : 1.0f;
+}
+
 void ALaserProjectile::ActivateProjectile(
 	const FVector& SpawnLocation, 
 	const FRotator& SpawnRotation,
@@ -84,6 +102,9 @@ void ALaserProjectile::ActivateProjectile(
 	SetActorLocation(SpawnLocation);
 	SetActorRotation(SpawnRotation);
 	SetOwner(NewOwner);
+#if WITH_DEV_AUTOMATION_TESTS
+    if (HasAuthority()) FactionBalance::Shot(NewOwner, false);
+#endif
 
 	if (CollisionComponent && IsValid(NewOwner))
 	{
@@ -101,7 +122,7 @@ void ALaserProjectile::ActivateProjectile(
 	ActiveTime = 0.0f;
 
 	SetActorHiddenInGame(false);
-	SetActorEnableCollision(true);
+	SetActorEnableCollision(HasAuthority());
 	SetActorTickEnabled(true);
 
 	if (ProjectileMovement)
@@ -120,9 +141,8 @@ void ALaserProjectile::ActivateProjectile(
 		ProjectileMovement->UpdateComponentVelocity();
 	}
 
-	if (LaserEffect)
+	if (LaserEffect && GetNetMode() != NM_DedicatedServer)
 	{
-		LaserEffect->ReinitializeSystem();
 
 		if (IsValid(LaserMaterial))
 		{
@@ -132,10 +152,10 @@ void ALaserProjectile::ActivateProjectile(
 			);
 		}
 
-		LaserEffect->Activate();
+		LaserEffect->Activate(true); // Reset the pooled effect once, after applying its material.
 	}
 
-	if (LaserFiredSound)
+	if (LaserFiredSound && GetNetMode() != NM_DedicatedServer)
 	{
 		UGameplayStatics::PlaySoundAtLocation(
 			this,
@@ -143,6 +163,7 @@ void ALaserProjectile::ActivateProjectile(
 			GetActorLocation()
 		);
 	}
+    if (HasAuthority()) PublishNetState();
 }
 
 void ALaserProjectile::DeactivateProjectile()
@@ -165,10 +186,11 @@ void ALaserProjectile::DeactivateProjectile()
 	SetActorEnableCollision(false);
 	SetActorTickEnabled(false);
 
-	SetOwner(nullptr);
+    // Keep the pool owner for relevancy, cleanup, and consistent ownership.
 
-	if (bWasActive)
+	if (HasAuthority() && bWasActive)
 	{
+        PublishNetState();
 		OnLaserDeactivated.ExecuteIfBound(this);
 	}
 }
@@ -181,27 +203,16 @@ void ALaserProjectile::HandleHit(
 	const FHitResult& Hit
 )
 {
-	if (!bIsActive || !IsValid(OtherActor) || OtherActor == GetOwner())
+	if (!HasAuthority() || !bIsActive || !IsValid(OtherActor) || OtherActor == GetOwner())
 	{
 		return;
 	}
 
-	if (HitSparkSound)
-	{
-		UGameplayStatics::PlaySoundAtLocation(
-			this,
-			HitSparkSound,
-			Hit.ImpactPoint
-		);
-	}
-	
-	UNiagaraFunctionLibrary::SpawnSystemAtLocation(
-			GetWorld(),
-			HitSparkEffect,
-			Hit.ImpactPoint,
-			FRotator::ZeroRotator
-		);
+    MulticastImpact(Hit.ImpactPoint);
 
+#if WITH_DEV_AUTOMATION_TESTS
+    FactionBalance::Hit(GetOwner(), OtherActor, false);
+#endif
 	UGameplayStatics::ApplyDamage(
 		OtherActor,
 		Damage,
@@ -231,4 +242,48 @@ void ALaserProjectile::SetLaserMaterial(UMaterialInterface* NewMaterial)
 			LaserMaterial
 		);
 	}
+}
+
+void ALaserProjectile::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+    Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+    DOREPLIFETIME(ALaserProjectile, NetState);
+    DOREPLIFETIME(ALaserProjectile, LaserMaterial);
+}
+void ALaserProjectile::PublishNetState()
+{
+    ++NetState.Revision;
+    NetState.bActive = bIsActive;
+    NetState.Location = GetActorLocation();
+    NetState.Rotation = GetActorRotation();
+    NetState.Speed = Speed;
+    ForceNetUpdate();
+    // A short-lived shot can activate and hit between property updates.
+    MulticastProjectileState(NetState);
+}
+void ALaserProjectile::OnRep_NetState() { ApplyNetState(NetState); }
+void ALaserProjectile::MulticastProjectileState_Implementation(const FProjectileNetState& State)
+{
+    if (!HasAuthority()) ApplyNetState(State);
+}
+void ALaserProjectile::ApplyNetState(const FProjectileNetState& State)
+{
+    if (HasAuthority() || int32(State.Revision - AppliedRevision) <= 0) return;
+    AppliedRevision = State.Revision;
+    if (State.bActive)
+    {
+        Speed = State.Speed;
+        ActivateProjectile(State.Location, State.Rotation, GetOwner(), 0.0f, State.Speed);
+        if (GetOwner())
+            if (auto* Weapon = GetOwner()->FindComponentByClass<ULaserWeaponComponent>()) Weapon->OnLaserFired.Broadcast();
+    }
+    else DeactivateProjectile();
+}
+
+void ALaserProjectile::OnRep_LaserMaterial() { SetLaserMaterial(LaserMaterial); }
+void ALaserProjectile::MulticastImpact_Implementation(FVector_NetQuantize Location)
+{
+    if (GetNetMode() == NM_DedicatedServer) return;
+    if (HitSparkSound) UGameplayStatics::PlaySoundAtLocation(this, HitSparkSound, Location);
+    if (HitSparkEffect) UNiagaraFunctionLibrary::SpawnSystemAtLocation(GetWorld(), HitSparkEffect, Location, FRotator::ZeroRotator, FVector::OneVector, true, true, ENCPoolMethod::AutoRelease);
 }

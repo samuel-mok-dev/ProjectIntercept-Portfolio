@@ -5,6 +5,7 @@
 #include "Components/SphereComponent.h"
 #include "NiagaraComponent.h"
 #include "Components/AudioComponent.h"
+#include "ProjectileNetState.h"
 #include "LaserProjectile.generated.h"
 
 class USphereComponent;
@@ -25,7 +26,8 @@ public:
 
 	FOnLaserDeactivated OnLaserDeactivated;
 
-	virtual void Tick(float DeltaTime) override;
+    virtual void Tick(float DeltaTime) override;
+    virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	void SetLaserMaterial(UMaterialInterface* NewMaterial);
 
@@ -81,13 +83,26 @@ protected:
 	);
 
 private:
-	bool bIsActive = false;
+    UPROPERTY(ReplicatedUsing=OnRep_NetState)
+    FProjectileNetState NetState;
+    uint32 AppliedRevision = 0;
+    UFUNCTION()
+    void OnRep_NetState();
+    UFUNCTION(NetMulticast, Reliable)
+    void MulticastProjectileState(const FProjectileNetState& State);
+    UFUNCTION(NetMulticast, Unreliable)
+    void MulticastImpact(FVector_NetQuantize Location);
+    void PublishNetState();
+    void ApplyNetState(const FProjectileNetState& State);
+    bool bIsActive = false;
 
 	float ActiveTime = 0.0f;
 	float Speed = 1000000.0f;
 	float MaxLifetime = 1.0f;
 	float Damage = 10.0f;
 
-	UPROPERTY()
+    UPROPERTY(ReplicatedUsing=OnRep_LaserMaterial)
 	TObjectPtr<UMaterialInterface> LaserMaterial;
+    UFUNCTION()
+    void OnRep_LaserMaterial();
 };

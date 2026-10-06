@@ -35,6 +35,9 @@ public:
     virtual void Update(FShipAIContext& Context) override;
     virtual void Exit(FShipAIContext& Context) override;
     virtual FString GetStateName() const override { return TEXT("Patrol"); }
+    FVector GetPatrolCentre() const { return HomeLocation; }
+    float GetPatrolRadius() const { return PatrolDistance; }
+    FVector GetPatrolDirection() const { return PatrolDirection; }
 
 private:
     void ChooseNewPatrolDirection(FShipAIContext& Context);
@@ -51,6 +54,21 @@ private:
     float PatrolAcceptanceRadius = 3000.0f;
 };
 
+// Time-based duty cycle: frame rate and rapid trigger re-presses cannot bypass pauses.
+struct FShipAIFireDiscipline
+{
+    float Age = 0.f;
+    float Reaction = .75f;
+    float Burst = .8f;
+    float Pause = 1.1f;
+    void Reset(float NewReaction = .75f, float NewBurst = .8f, float NewPause = 1.1f)
+    { Age=0.f; Reaction=NewReaction; Burst=NewBurst; Pause=NewPause; }
+    void Advance(float DeltaTime) { Age += FMath::Max(0.f, DeltaTime); }
+    bool IsReady() const { return Age >= Reaction; }
+    bool CanFireGuns() const
+    { return IsReady() && FMath::Fmod(Age-Reaction, Burst+Pause) < Burst; }
+};
+
 class FShipAIPursueState : public FShipAIState
 {
 public:
@@ -60,10 +78,13 @@ public:
     virtual FString GetStateName() const override { return TEXT("Pursue"); }
 
 private:
+    FShipAIFireDiscipline FireDiscipline;
+    TWeakObjectPtr<AActor> EngagedTarget;
+    float AimErrorPhase = 0.f;
     float GunAlignmentThreshold = 0.95f;
     float MissileAlignmentThreshold = 0.9f;
-    float MissileFireCooldown = 2.0f;
-	float TimeSinceLastMissile = 1000.0f;
+    float MissileFireCooldown = 8.0f;
+    float TimeSinceLastMissile = 0.0f;
     float MissileProximityLimit = 7000.0f;
 };
 

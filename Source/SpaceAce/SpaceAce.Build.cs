@@ -12,6 +12,8 @@ public class SpaceAce : ModuleRules
 			"Core", 
 			"CoreUObject", 
 			"Engine", 
+			"EngineCameras",
+            "ProceduralMeshComponent",
 			"InputCore", 
 			"EnhancedInput", 
 			"Niagara", 
@@ -19,7 +21,13 @@ public class SpaceAce : ModuleRules
 			"UMG"
 		 });
 
-		PrivateDependencyModuleNames.AddRange(new string[] {  });
+		PublicDependencyModuleNames.AddRange(new string[] { "OnlineSubsystem", "OnlineSubsystemUtils" });
+		PrivateDependencyModuleNames.AddRange(new string[] { "OnlineSubsystemSteam", "SteamSockets", "Sockets", "Slate", "SlateCore", "RHI" });
+		AddEngineThirdPartyPrivateStaticDependencies(Target, "Steamworks");
+        if (Target.bBuildEditor)
+        {
+            PrivateDependencyModuleNames.AddRange(new string[] { "UnrealEd", "AssetRegistry", "UMGEditor" });
+        }
 
 		// Add subdirectories to include paths
 		PublicIncludePaths.AddRange(new string[] {

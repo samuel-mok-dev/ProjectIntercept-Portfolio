@@ -29,6 +29,9 @@ public:
 	virtual void BeginPlay() override;
 
 	virtual void Tick(float DeltaTime) override;
+    virtual float TakeDamage(float DamageAmount, const FDamageEvent& DamageEvent,
+        AController* EventInstigator, AActor* DamageCauser) override;
+    virtual void UnPossessed() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	void HandleLookInput(const FVector2D& LookValue);
@@ -113,15 +116,6 @@ protected:
 	TObjectPtr<USoundClass> MasterSoundClass;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Shake")
-	TSubclassOf<UCameraShakeBase> DamageCameraShakeClass;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Shake")
-	float DamageForMaximumShake = 50.0f;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Shake")
-	float MinimumDamageShakeScale = 0.15f;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Shake")
 	TSubclassOf<UCameraShakeBase> LaserFireCameraShakeClass;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Camera|Shake")
@@ -130,8 +124,6 @@ protected:
 	UFUNCTION()
 	void HandleLaserFired();
 
-	UFUNCTION()
-	void HandleDamageFeedback(float DamageAmount);
 
 	void PlayCameraShake(
 		TSubclassOf<UCameraShakeBase> CameraShakeClass,
@@ -143,6 +135,9 @@ protected:
 
 	float MissileVoiceWarningTimeRemaining = 0.0f;
 	float MissileLockToneTimerRemaining = 0.0f;
+    float AcquisitionBeepTimer = 0.0f;
+    float PreviousLockProgress = 0.0f;
+    TWeakObjectPtr<AActor> AudioLockTarget;
 
 	bool bMissileWarningAudioActive = false;
 	bool bMissileLockAudioActive = false;
@@ -158,6 +153,14 @@ protected:
 	void StopMissileLockAudio();
 
 private:
+    // Cosmetic events go only to the owning player; gameplay remains authoritative.
+    UFUNCTION(Client, Unreliable)
+    void ClientFlightShake(uint8 Event);
+    void UpdateCatapultCameraShake();
+    void StopFlightCameraShakes();
+    double LastLaserShakeTime = -1.;
+    bool bCatapultShakePlayed = false;
+    TWeakObjectPtr<class APlayerCameraManager> ShakeCameraManager;
 	float LookYaw = 0.0f;
 	float LookPitch = 0.0f;
 

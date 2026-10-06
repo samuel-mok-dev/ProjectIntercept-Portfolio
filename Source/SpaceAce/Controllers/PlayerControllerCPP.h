@@ -4,9 +4,9 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerController.h"
+#include "ShipBase.h"
 #include "PlayerControllerCPP.generated.h"
 
-class AShipBase;
 class APlayerShip;
 class UInputAction;
 class UInputMappingContext;
@@ -21,8 +21,16 @@ class SPACEACE_API APlayerControllerCPP : public APlayerController
 	GENERATED_BODY()
 
 public:
+    UPROPERTY(Replicated, BlueprintReadOnly, Category="Respawn") int32 RespawnShipsAhead = INDEX_NONE;
+    UPROPERTY(Replicated, BlueprintReadOnly, Category="Respawn") int32 RespawnQueueSize = 0;
+    virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out) const override;
+    void ApplyInputBindings();
 
 	APlayerControllerCPP();
+    UFUNCTION(Server, Reliable) void ServerSelectPlaytestFighter(int32 TeamID, FName FighterID);
+	virtual void SetPawn(APawn* InPawn) override;
+	virtual void OnRep_Pawn() override;
+	virtual void PlayerTick(float DeltaTime) override;
 
 	UFUNCTION(BlueprintCallable, Category = "Menu")
 	void TogglePauseMenu();
@@ -32,6 +40,9 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Menu")
 	void ResumeGame();
+
+	UFUNCTION(BlueprintCallable, Category = "Menu")
+	void ClearPauseState();
 
 	UFUNCTION(BlueprintPure, Category = "Menu")
 	bool IsPauseMenuOpen() const;
@@ -49,6 +60,7 @@ protected:
 	// Input mapping context for the player controller
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
 	TObjectPtr<UInputMappingContext> IMC_Player;
+    UPROPERTY(Transient) TObjectPtr<UInputMappingContext> RuntimeInputContext;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
 	TObjectPtr<UInputAction> IA_Throttle;
@@ -80,6 +92,9 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
 	TObjectPtr<UInputAction> IA_SwitchSecondaryWeapon;
 
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Input") TObjectPtr<UInputAction> IA_Countermeasures;
+    void HandleCountermeasures(const FInputActionValue& Value);
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
 	TObjectPtr<UInputAction> IA_Pause;
 
@@ -96,6 +111,13 @@ protected:
 	UPROPERTY(Transient)
 	TObjectPtr<APlayerShip> ControlledPlayerShip;
 
+	void RefreshControlledShip();
+	float FlightInputSendElapsed = 0.0f;
+
+	// Current flight input state
+	UPROPERTY(Transient)
+	FFlightInput CurrentFlightInput;
+
 	// Input handling functions
 	void HandleThrottle(const FInputActionValue& Value);
 	void HandlePitch(const FInputActionValue& Value);
@@ -108,4 +130,7 @@ protected:
 	void HandleSwitchCamera(const FInputActionValue& Value);
 	void HandleSwitchSecondaryWeapon(const FInputActionValue& Value);
 	void HandlePause(const FInputActionValue& Value);
+
+	UFUNCTION(Server, Unreliable)
+	void ServerSetFlightInput(const FFlightInput& NewFlightInput);
 };

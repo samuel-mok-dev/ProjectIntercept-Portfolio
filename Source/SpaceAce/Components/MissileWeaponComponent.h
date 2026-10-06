@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "SpecialWeaponProfile.h"
 #include "MissileWeaponComponent.generated.h"
 
 class AActor;
@@ -21,10 +22,20 @@ class SPACEACE_API UMissileWeaponComponent : public UActorComponent
 	GENERATED_BODY()
 
 public:
-	UMissileWeaponComponent();
+    UMissileWeaponComponent();
+    virtual void EndPlay(const EEndPlayReason::Type Reason) override;
+    virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	void Configure(const TArray<USceneComponent*>& NewHardpoints);
 	void InitializeMissilePool();
+    void ResetForSortie();
+    void ApplySpecialWeaponProfile(const FSpecialWeaponProfile& Profile);
+    FString GetCurrentWeaponName() const;
+    float GetRequiredLockTime() const;
+    float GetCooldownRemaining() const;
+    bool IsTargetCompatible(const AActor* Target) const;
+    const FSpecialWeaponProfile& GetSpecialWeaponProfile() const { return SpecialProfile; }
+    bool PredictBombImpact(FVector& OutLocation, const AActor* RequiredActor=nullptr) const;
 
 	void FireMissile(AActor* Target, bool bHasLock);
 	void SwitchWeaponMode();
@@ -101,10 +112,12 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Secondary Weapon")
 	TArray<USceneComponent*> MissileHardpoints;
 
-	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Secondary Weapon")
+	UPROPERTY(Replicated, VisibleInstanceOnly, BlueprintReadOnly, Category = "Secondary Weapon")
 	ESecondaryWeaponMode WeaponMode = ESecondaryWeaponMode::StandardMissile;
 
 private:
+    FSpecialWeaponProfile SpecialProfile;
+    UPROPERTY(Replicated) float SpecialReadyAt = 0.0f;
 	UPROPERTY()
 	TArray<TObjectPtr<AMissileProjectile>> StandardMissilePool;
 
@@ -115,10 +128,13 @@ private:
 	TQueue<AMissileProjectile*> AvailableSpecialWeapons;
 	TSet<TWeakObjectPtr<AMissileProjectile>> SpecialWeaponProjectiles;
 
+    UPROPERTY(Replicated)
 	TArray<bool> bHardpointLoaded;
 	TArray<FTimerHandle> MissileReloadTimerHandles;
 
+    UPROPERTY(Replicated)
 	int32 ActiveProjectileCount = 0;
+    UPROPERTY(Replicated)
 	int32 RemainingSpecialAmmo = 0;
 	int32 NextSpecialHardpoint = 0;
 	float LastSpecialFireTime = -1000.0f;

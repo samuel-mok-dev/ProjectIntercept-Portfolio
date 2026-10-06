@@ -1,4 +1,5 @@
 #include "PlayerShip.h"
+#include "SpaceAceUserSettings.h"
 
 #include "HealthComponent.h"
 #include "TargetingComponent.h"
@@ -9,9 +10,17 @@
 #include "AvionicsSynthComponent.h"
 #include "AudioVoiceWarningComponent.h"
 #include "TimerManager.h"
+#include "Net/UnrealNetwork.h"
+#include "FlightCameraShakes.h"
+#include "MissileProjectile.h"
+#include "GameFramework/GameStateBase.h"
+#include "Camera/PlayerCameraManager.h"
 
 APlayerShip::APlayerShip()
 {
+    // Space-flight separation quickly exceeds the default 150 m actor cutoff.
+    // Player craft must remain available to the other players and their HUDs.
+    bAlwaysRelevant = true;
     CameraBoom = CreateDefaultSubobject<USpringArmComponent>(TEXT("CameraBoom"));
     CameraBoom->SetupAttachment(ShipMesh);
     CameraBoom->TargetArmLength = 200.0f;
@@ -60,13 +69,17 @@ APlayerShip::APlayerShip()
 
 void APlayerShip::BeginPlay()
 {
+    // Apply after legacy Blueprint defaults so existing player assets inherit
+    // the multiplayer policy without requiring an asset resave.
+    bAlwaysRelevant = true;
+    bOnlyRelevantToOwner = false;
+    bNetUseOwnerRelevancy = false;
     Super::BeginPlay();
+    // Sample the corrected physics pose once physics has finished this frame.
+    CameraBoom->PrimaryComponentTick.TickGroup = TG_PostPhysics;
+    CameraBoom->bUseCameraLagSubstepping = true;
+    CameraBoom->AddTickPrerequisiteActor(this);
     SetCameraMode(InitialCameraMode);
-
-    HealthComponent->OnDamageReceived.AddDynamic(
-        this,
-        &APlayerShip::HandleDamageFeedback
-    );
 
     if (LaserWeaponComponent)
     {
@@ -80,14 +93,35 @@ void APlayerShip::BeginPlay()
 void APlayerShip::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
+    UpdateCatapultCameraShake();
+    if(IsLocallyControlled())
+        if(const auto* Settings=USpaceAceUserSettings::Get())
+        {
+            if(ThirdPersonCamera)ThirdPersonCamera->SetFieldOfView(Settings->FieldOfView);
+            if(CockpitCamera)CockpitCamera->SetFieldOfView(Settings->FieldOfView);
+        }
+
+    if (!IsLocallyControlled() || IsDead() || !IsCombatEnabled() || IsInPreMatchFlight())
+    {
+        StopAllAvionicsAudio();
+        return;
+    }
 
     UpdateMissileWarningAudio(DeltaTime);
 	UpdateMissileLockAudio();
 }
 
+void APlayerShip::UnPossessed()
+{
+    StopFlightCameraShakes();
+    StopAllAvionicsAudio();
+    Super::UnPossessed();
+}
+
 void APlayerShip::EndPlay(const EEndPlayReason:: Type EndPlayReason)
 {
-    StopMissileWarningAudio();
+    StopFlightCameraShakes();
+    StopAllAvionicsAudio();
 
     Super::EndPlay(EndPlayReason);
 }
@@ -282,35 +316,52 @@ void APlayerShip::StopMissileVoiceWarning()
 
 void APlayerShip::UpdateMissileLockAudio()
 {
-    if (HasIncomingMissile())
+    if (!IsLocallyControlled() || IsDead() || !IsCombatEnabled() || IsInPreMatchFlight() ||
+        HasIncomingMissile() || !IsCurrentSecondaryWeaponHoming() || !TargetingComponent)
     {
-        bMissileLockAudioActive = false;
-        MissileLockToneTimerRemaining = 0.0f;
+        StopMissileLockAudio();
         return;
     }
 
-    const bool bLocked =
-        TargetingComponent &&
-        TargetingComponent->IsLockedOn();
-
-    if (bLocked && !bMissileLockAudioActive)
+    const float Progress = TargetingComponent->GetLockOnProgress();
+    AActor* Target = TargetingComponent->GetCurrentTarget();
+    if (AudioLockTarget.Get() != Target || Progress < PreviousLockProgress)
     {
-        bMissileLockAudioActive = true;
-        MissileLockToneTimerRemaining = 0.0f;
-        PlayMissileLockAudio();
+        StopMissileLockAudio();
+        AudioLockTarget = Target;
     }
-    else if (bLocked && bMissileLockAudioActive)
+    PreviousLockProgress = Progress;
+    const bool bLocked = TargetingComponent->IsLockedOn();
+    const float DeltaTime = GetWorld()->GetDeltaSeconds();
+    if (bLocked)
     {
-        // Keep the tone looping while locked on
-        MissileLockToneTimerRemaining -= GetWorld()->GetDeltaSeconds();
-
-        if (MissileLockToneTimerRemaining <= 0.0f)
+        if (!bMissileLockAudioActive)
         {
-            PlayMissileLockAudio();
-            MissileLockToneTimerRemaining = 4.8f;
+            // A high confirmation chirp resolves into the existing steady lock tone.
+            if (MissileLockSynth) MissileLockSynth->PlayBeep(MissileLockFrequency * 1.5f, 0.12f, 0.25f);
+            bMissileLockAudioActive = true;
+            MissileLockToneTimerRemaining = 0.14f;
+        }
+        else
+        {
+            MissileLockToneTimerRemaining -= DeltaTime;
+            if (MissileLockToneTimerRemaining <= 0.0f)
+            {
+                PlayMissileLockAudio();
+                MissileLockToneTimerRemaining = 4.8f;
+            }
         }
     }
-    else if (!bLocked && bMissileLockAudioActive)
+    else if (Progress > 0.0f)
+    {
+        AcquisitionBeepTimer -= DeltaTime;
+        if (AcquisitionBeepTimer <= 0.0f)
+        {
+            if (MissileLockSynth) MissileLockSynth->PlayBeep(MissileLockFrequency, 0.045f, 0.18f);
+            AcquisitionBeepTimer = FMath::Lerp(0.22f, 0.065f, Progress);
+        }
+    }
+    else
     {
         StopMissileLockAudio();
     }
@@ -333,6 +384,10 @@ void APlayerShip::PlayMissileLockAudio()
 void APlayerShip::StopMissileLockAudio()
 {
 	bMissileLockAudioActive = false;
+    AcquisitionBeepTimer = 0.0f;
+    PreviousLockProgress = 0.0f;
+    MissileLockToneTimerRemaining = 0.0f;
+    AudioLockTarget.Reset();
 
 	if (MissileLockSynth)
 	{
@@ -393,31 +448,71 @@ void APlayerShip::SwitchCameraMode()
     );
 }
 
-void APlayerShip::HandleDamageFeedback(float DamageAmount)
+float APlayerShip::TakeDamage(float DamageAmount, const FDamageEvent& DamageEvent,
+    AController* EventInstigator, AActor* DamageCauser)
 {
-	if (DamageAmount <= 0.0f)
-	{
-		return;
-	}
-
-	const float NormalizedDamage = FMath::Clamp(
-		DamageAmount / DamageForMaximumShake,
-		0.0f,
-		1.0f
-	);
-
-	const float ShakeIntensity = FMath::Lerp(
-		MinimumDamageShakeScale,
-		1.0f,
-		NormalizedDamage
-	);
-
-	PlayCameraShake(DamageCameraShakeClass, ShakeIntensity);
+    const bool bMissile = IsValid(DamageCauser) && DamageCauser->IsA<AMissileProjectile>();
+    const float Applied = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
+    if (HasAuthority() && Applied > 0.f && !IsDead()) ClientFlightShake(bMissile ? 2 : 1);
+    return Applied;
 }
 
 void APlayerShip::HandleLaserFired()
 {
-	PlayCameraShake(LaserFireCameraShakeClass, LaserFireShakeScale);
+    if (!HasAuthority() || !GetWorld()) return;
+    // The weapon broadcasts once per muzzle. One recoil per volley is sufficient.
+    const double Now = GetWorld()->GetTimeSeconds();
+    if (Now - LastLaserShakeTime < .04) return;
+    LastLaserShakeTime = Now;
+    ClientFlightShake(0);
+}
+
+void APlayerShip::ClientFlightShake_Implementation(uint8 Event)
+{
+    if (IsDead()) return;
+    if (Event == 0)
+        PlayCameraShake(LaserFireCameraShakeClass ? LaserFireCameraShakeClass.Get() : ULaserFireCameraShake::StaticClass(),
+            LaserFireCameraShakeClass ? LaserFireShakeScale : 1.f);
+    else if (Event == 1) PlayCameraShake(ULaserHitCameraShake::StaticClass(), 1.f);
+    else if (Event == 2) PlayCameraShake(UMissileHitCameraShake::StaticClass(), 1.f);
+}
+
+void APlayerShip::UpdateCatapultCameraShake()
+{
+    const auto* Settings = USpaceAceUserSettings::Get();
+    if (!IsLocallyControlled() || IsDead() || (Settings && !Settings->bCameraShake))
+    {
+        StopFlightCameraShakes();
+        return;
+    }
+    if (!bOnCatapult || !bCatapultLaunching)
+    {
+        bCatapultShakePlayed = false;
+        if (auto* Manager = ShakeCameraManager.Get())
+            Manager->StopAllInstancesOfCameraShake(UCatapultCameraShake::StaticClass(), false);
+        return;
+    }
+    const auto* State = GetWorld()->GetGameState();
+    const double Now = State ? State->GetServerWorldTimeSeconds() : GetWorld()->GetTimeSeconds();
+    if (!bCatapultShakePlayed && Now >= CatapultStartedAt)
+    {
+        bCatapultShakePlayed = true;
+        PlayCameraShake(UCatapultCameraShake::StaticClass(), 1.f);
+    }
+}
+
+void APlayerShip::StopFlightCameraShakes()
+{
+    if (auto* Manager = ShakeCameraManager.Get())
+    {
+        Manager->StopAllInstancesOfCameraShake(UCatapultCameraShake::StaticClass(), true);
+        Manager->StopAllInstancesOfCameraShake(UMissileHitCameraShake::StaticClass(), true);
+        Manager->StopAllInstancesOfCameraShake(ULaserHitCameraShake::StaticClass(), true);
+        Manager->StopAllInstancesOfCameraShake(ULaserFireCameraShake::StaticClass(), true);
+        if (LaserFireCameraShakeClass) Manager->StopAllInstancesOfCameraShake(LaserFireCameraShakeClass, true);
+    }
+    ShakeCameraManager.Reset();
+    bCatapultShakePlayed = false;
 }
 
 void APlayerShip::PlayCameraShake(
@@ -425,18 +520,20 @@ void APlayerShip::PlayCameraShake(
 	float ShakeIntensity
 )
 {
-	if (!CameraShakeClass || ShakeIntensity <= 0.0f)
+	if (!IsLocallyControlled() || !CameraShakeClass || ShakeIntensity <= 0.0f || (USpaceAceUserSettings::Get()&&!USpaceAceUserSettings::Get()->bCameraShake))
 	{
 		return;
 	}
 
 	APlayerController* PlayerController = Cast<APlayerController>(GetController());
 
-	if (!PlayerController || !PlayerController->PlayerCameraManager)
+	if (!PlayerController || !PlayerController->IsLocalController() || !PlayerController->PlayerCameraManager ||
+        PlayerController->GetViewTarget() != this)
 	{
 		return;
 	}
 
+	ShakeCameraManager = PlayerController->PlayerCameraManager;
 	PlayerController->PlayerCameraManager->StartCameraShake(
 		CameraShakeClass,
 		ShakeIntensity

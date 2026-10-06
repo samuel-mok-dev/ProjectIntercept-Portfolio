@@ -17,6 +17,9 @@ class SPACEACE_API ADefenseTurretBase : public AActor, public IMissionObjectiveI
 public:
 	ADefenseTurretBase();
 	virtual void BeginPlay() override;
+    virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out) const override;
+    bool IsDestroyed() const { return bDestroyed; }
+    UFUNCTION() void OnRep_Destroyed();
 	virtual void Tick(float DeltaSeconds) override;
 	virtual float TakeDamage(float DamageAmount, FDamageEvent const& DamageEvent,
 		AController* EventInstigator, AActor* DamageCauser) override;
@@ -63,7 +66,7 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Turret|Components")
 	TObjectPtr<USceneComponent> SecondaryMuzzle;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Defense")
+	UPROPERTY(Replicated, EditAnywhere, BlueprintReadOnly, Category = "Defense")
 	int32 TeamID = 1;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Defense", meta = (ClampMin = "0.0"))
@@ -99,10 +102,14 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Turret|Aiming")
 	bool bRequireLineOfSight = true;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Defense")
+	UPROPERTY(ReplicatedUsing=OnRep_Destroyed, BlueprintReadOnly, Category = "Defense")
 	bool bDestroyed = false;
 
 private:
-	float Health = 100.0f;
+	UPROPERTY(Replicated) float Health = 100.0f;
+    UPROPERTY(Replicated) float ReplicatedYaw = 0;
+    UPROPERTY(Replicated) float ReplicatedPitch = 0;
+    TWeakObjectPtr<AShipBase> CachedTarget;
+    float TargetScanTimer = 0;
 	float FireTimer = 0.0f;
 };

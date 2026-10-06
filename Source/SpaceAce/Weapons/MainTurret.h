@@ -12,6 +12,8 @@ class SPACEACE_API AMainTurret : public ADefenseTurretBase
 	GENERATED_BODY()
 
 protected:
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon")
+    bool bFireSecondaryMuzzle = true;
 	virtual void FireAtTarget(AShipBase* Target) override;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon")

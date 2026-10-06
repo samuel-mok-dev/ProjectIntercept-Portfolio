@@ -32,6 +32,8 @@ public:
 	AActor* GetSelectedContactActor() const;
 
 	void ResetForRespawn();
+    void SetMissionAttackTarget(AActor* Target);
+    AActor* GetMissionAttackTarget() const { return MissionAttackTarget.Get(); }
 
 protected:
 	virtual void OnPossess(APawn* InPawn) override;
@@ -41,6 +43,13 @@ protected:
 	virtual ~AShipAIController() override;
 
 private:
+    TWeakObjectPtr<AActor> MissionAttackTarget;
+    bool bMissionBreakOff = false;
+    FVector MissionEscapeDirection = FVector::UpVector;
+    float MissionMissileCooldown = 0.0f;
+    FVector MissionRunDirection=FVector::ForwardVector;
+    int32 MissionBombsDropped=0;
+    void UpdateMissionAttack(float DeltaTime);
 	// Reference to the controlled ship
 	UPROPERTY()
 	TObjectPtr<AShipBase> ControlledShip;

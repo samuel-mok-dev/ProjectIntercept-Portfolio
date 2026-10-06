@@ -1,10 +1,16 @@
 #include "TargetingComponent.h"
+#include "Net/UnrealNetwork.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "GameplayTagAssetInterface.h"
 #include "EngineUtils.h"
 #include "ShipBase.h"
+#include "DefenseTurretBase.h"
+#include "CapitalShipBase.h"
+#include "MissileWeaponComponent.h"
 
 UTargetingComponent::UTargetingComponent()
 {
+    SetIsReplicatedByDefault(true);
     PrimaryComponentTick.bCanEverTick = false; // Disable ticking for this component
 }
 
@@ -23,18 +29,36 @@ void UTargetingComponent::Configure(const FGameplayTag& NewEnemyTeamTag)
 
 bool UTargetingComponent::IsValidTarget(AActor* Candidate) const
 {
-    if (!IsValid(Candidate) || Candidate == GetOwner())
+    if (!IsValid(Candidate) || Candidate == GetOwner() || Candidate->IsHidden())
     {
         return false;
     }
 
     AShipBase* CandidateShip = Cast<AShipBase>(Candidate);
 
-    if (CandidateShip && CandidateShip->IsDead())
+    if (CandidateShip && (CandidateShip->IsDead() || CandidateShip->bOnCatapult))
     {
         return false;
     }
 
+    if (const AShipBase* OwnerShip = Cast<AShipBase>(GetOwner()))
+    {
+        if (CandidateShip && OwnerShip->GetTeamID() != INDEX_NONE && CandidateShip->GetTeamID() != INDEX_NONE)
+            return OwnerShip->IsHostileTo(CandidateShip);
+    }
+
+    if (const auto* Turret=Cast<ADefenseTurretBase>(Candidate))
+    {
+        const auto* Ship=Cast<AShipBase>(GetOwner());
+        return Ship && !Turret->IsDestroyed() && Ship->GetTeamID()!=Turret->GetTeamID();
+    }
+    if (const auto* Capital = Cast<ACapitalShipBase>(Candidate))
+    {
+        const auto* Ship = Cast<AShipBase>(GetOwner());
+        return Candidate == PriorityTarget.Get() && Ship && !Capital->IsHidden() &&
+            Ship->GetTeamID() != INDEX_NONE && Capital->GetTeamID() != INDEX_NONE &&
+            Ship->GetTeamID() != Capital->GetTeamID();
+    }
     IGameplayTagAssetInterface* TagInterface = 
     Cast<IGameplayTagAssetInterface>(Candidate);
 
@@ -52,14 +76,41 @@ bool UTargetingComponent::IsValidTarget(AActor* Candidate) const
     return bHasEnemyTag;
 }
 
+void UTargetingComponent::SetPriorityTarget(AActor* Target)
+{
+    if (!GetOwner() || !GetOwner()->HasAuthority() || PriorityTarget.Get() == Target) return;
+    PriorityTarget = Target;
+    AcquireTargets();
+}
+
+void UTargetingComponent::SetAICombatTarget(AActor* Target)
+{
+    if (!GetOwner() || !GetOwner()->HasAuthority()) return;
+    const bool bChanged = !bAIControlsTarget || AICombatTarget.Get() != Target;
+    bAIControlsTarget = true;
+    AICombatTarget = Target;
+    if (bChanged || !IsValidTarget(CurrentTarget)) AcquireTargets();
+}
+
+void UTargetingComponent::ReleaseAICombatTarget()
+{
+    if (!GetOwner() || !GetOwner()->HasAuthority()) return;
+    bAIControlsTarget = false;
+    AICombatTarget.Reset();
+    ClearTarget();
+    AcquireTargets();
+}
+
 void UTargetingComponent:: AcquireTargets()
 {
+    if (GetOwner() && !GetOwner()->HasAuthority()) return;
+    if (const auto* Ship=Cast<AShipBase>(GetOwner()); Ship && Ship->bOnCatapult) { ClearTarget(); return; }
+    TRACE_CPUPROFILER_EVENT_SCOPE(SpaceAce_UTargetingComponent_AcquireTargets);
     UWorld* World = GetWorld();
     if (!World)
     {
         SortedTargets.Reset();
-        CurrentTarget = nullptr;
-        CurrentTargetIndex = INDEX_NONE;
+        ClearTarget();
         return;
     }
 
@@ -67,6 +118,26 @@ void UTargetingComponent:: AcquireTargets()
         CurrentTarget;
 
     SortedTargets.Reset();
+
+    if (IsValidTarget(PriorityTarget.Get()))
+    {
+        SortedTargets.Add(PriorityTarget.Get());
+        if (CurrentTarget != PriorityTarget.Get()) SelectTarget(0);
+        else CurrentTargetIndex = 0;
+        return;
+    }
+
+    if (bAIControlsTarget)
+    {
+        if (IsValidTarget(AICombatTarget.Get()))
+        {
+            SortedTargets.Add(AICombatTarget.Get());
+            if (CurrentTarget != AICombatTarget.Get()) SelectTarget(0);
+            else CurrentTargetIndex = 0;
+        }
+        else ClearTarget();
+        return;
+    }
 
     for (TActorIterator<AActor> It(World); It; ++It)
     {
@@ -170,6 +241,8 @@ void UTargetingComponent::ClearTarget()
 
 void UTargetingComponent::SwitchTarget()
 {
+    if (GetOwner() && !GetOwner()->HasAuthority()) return;
+    if (const auto* Ship=Cast<AShipBase>(GetOwner()); Ship && Ship->bOnCatapult) { ClearTarget(); return; }
     UE_LOG(
         LogTemp,
         Warning,
@@ -211,7 +284,8 @@ void UTargetingComponent::SwitchTarget()
 
 AActor* UTargetingComponent::GetCurrentTarget() const
 {
-    return CurrentTarget;
+    const auto* Ship=Cast<AShipBase>(GetOwner());
+    return Ship && Ship->bOnCatapult ? nullptr : CurrentTarget;
 }
 
 bool UTargetingComponent::IsLockedOn() const
@@ -219,8 +293,27 @@ bool UTargetingComponent::IsLockedOn() const
     return bIsLockedOn;
 }
 
+float UTargetingComponent::GetLockOnProgress() const
+{
+    if (bIsLockedOn) return 1.0f;
+    const auto* Weapon=GetOwner() ? GetOwner()->FindComponentByClass<UMissileWeaponComponent>() : nullptr;
+    const float Duration=Weapon ? Weapon->GetRequiredLockTime() : RequiredLockOnTime;
+    return Duration > KINDA_SMALL_NUMBER ? FMath::Clamp(LockOnTime / Duration,0.0f,1.0f) : 0.0f;
+}
+
+void UTargetingComponent::ResetLockOn()
+{
+    if (GetOwner() && !GetOwner()->HasAuthority()) return;
+    if (const auto* Ship=Cast<AShipBase>(GetOwner()); Ship && Ship->bOnCatapult) { ClearTarget(); return; }
+    LockOnTime = 0.0f;
+    bIsLockedOn = false;
+}
+
 void UTargetingComponent::UpdateLockOn(float DeltaTime)
 {
+    if (GetOwner() && !GetOwner()->HasAuthority()) return;
+    if (const auto* Ship=Cast<AShipBase>(GetOwner()); Ship && Ship->bOnCatapult) { ClearTarget(); return; }
+    TRACE_CPUPROFILER_EVENT_SCOPE(SpaceAce_UTargetingComponent_UpdateLockOn);
     if (!IsValidTarget(CurrentTarget))
     {
         LockOnTime = 0.0f;
@@ -236,11 +329,17 @@ void UTargetingComponent::UpdateLockOn(float DeltaTime)
 
     AShipBase* OwnerShip = Cast<AShipBase>(GetOwner());
 
-    if (!OwnerShip)
+	if (!OwnerShip || OwnerShip->IsDead() || !OwnerShip->IsCombatEnabled() ||
+        OwnerShip->IsInPreMatchFlight() || !OwnerShip->IsCurrentSecondaryWeaponHoming())
     {
         LockOnTime = 0.0f;
         bIsLockedOn = false;
         return;
+    }
+    if (const auto* Weapon=OwnerShip->FindComponentByClass<UMissileWeaponComponent>())
+    {
+        RequiredLockOnTime=Weapon->GetRequiredLockTime();
+        if (!Weapon->IsTargetCompatible(CurrentTarget)) { LockOnTime=0;bIsLockedOn=false;return; }
     }
 
     const FVector DistanceSquaredVector = 
@@ -269,10 +368,18 @@ void UTargetingComponent::UpdateLockOn(float DeltaTime)
         return;
     }
 
-    LockOnTime += DeltaTime;
+    LockOnTime = FMath::Min(LockOnTime + FMath::Max(DeltaTime, 0.0f),
+        FMath::Max(RequiredLockOnTime, 0.0f));
 
     if (LockOnTime >= RequiredLockOnTime)
     {
         bIsLockedOn = true;
     }
+}
+void UTargetingComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+    Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+    DOREPLIFETIME_CONDITION(UTargetingComponent, CurrentTarget, COND_OwnerOnly);
+    DOREPLIFETIME_CONDITION(UTargetingComponent, LockOnTime, COND_OwnerOnly);
+    DOREPLIFETIME_CONDITION(UTargetingComponent, bIsLockedOn, COND_OwnerOnly);
 }

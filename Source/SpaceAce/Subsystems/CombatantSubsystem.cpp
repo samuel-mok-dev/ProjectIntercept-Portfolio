@@ -1,4 +1,5 @@
 #include "CombatantSubsystem.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 
 void UCombatantSubsystem::RegisterCombatant(AActor* Combatant)
 {
@@ -48,6 +49,7 @@ void UCombatantSubsystem::GetCombatantsInRange(
     TArray<AActor*>& OutCombatants
 )
 {
+    TRACE_CPUPROFILER_EVENT_SCOPE(SpaceAce_UCombatantSubsystem_GetCombatantsInRange);
     OutCombatants.Reset();
 
     if (Radius <= 0.0f)
